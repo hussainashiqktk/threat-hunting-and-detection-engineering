@@ -1,0 +1,347 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# PureLog Stealer - Copyright Lure Multi-Stage Attack Hunting Workbook\n---\n\n**Threat Family:** PureLog Stealer (Information Stealer)\n**Campaign Name:** Copyright Lures Mask a Multi-Stage PureLog Stealer Attack\n**Reported:** March 19, 2026\n**Source:** Trend Micro Research (Mohamed Fahmy, Allixon Kristoffer Francisco, Jonna Santos)\n**Initial Access:** Phishing / Malvertising (Google Ads) - Copyright Violation Lure\n**Delivery Method:** Malicious ZIP containing shellcode loader disguised as legal notice EXE\n**Final Payload:** PureLog Stealer (fileless, in-memory via dual .NET loaders)\n\n**Targeted Industries:**\n- Healthcare\n- Government\n- Hospitality\n- Education\n\n**Targeted Countries:** Germany, Canada, United States, Australia\n\n**Threat Intelligence Sources:**\n- https://www.trendmicro.com/en_us/research/26/c/copyright-lures-mask-a-multistage-purelog-stealer-attack.html\n\n---\n> **Analyst Notes:** This campaign uses language-matched lures (German/English) delivered via phishing or Google Ads malvertising. The infection chain is fileless after initial execution - no final payload touches disk. Two parallel .NET loaders (Dgrfauysx.exe + Fsywsuac.exe) provide redundancy. AMSI is patched in memory before payload load. Registry persistence uses 'SystemSettings' as autorun key name.",
+        "style": "info"
+      },
+      "name": "text - Executive Summary"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Attack Chain Summary\n\n| Stage | Action | Key Indicator |\n|-------|--------|---------------|\n| 1 | User executes copyright lure EXE | `*Violation*Intellectual*Property*.exe` |\n| 2 | Decoy PDF opened to distract user | `start \"\" \".\\\\document.pdf\"` |\n| 3 | Encrypted payload downloaded as invoice.pdf | `curl -A \"curl/meow_meow\"` |\n| 4 | Decryption password fetched from C2 | `quickdocshare.com/DQ/key` |\n| 5 | Renamed WinRAR (PNG extension) extracts payload | `FILE_*.png x -p\"%i\"` |\n| 6 | Staging file deleted | `del invoice.pdf` |\n| 7 | Working dir changed to fake Windows path | `C:\\\\Users\\\\Public\\\\Windows` |\n| 8 | Renamed python.exe (svchost.exe) runs loader | `svchost.exe instructions.pdf` |\n| 9 | AMSI patched in memory | AmsiScanBuffer patched via ctypes |\n| 10 | Dual .NET loaders executed in memory | Dgrfauysx.exe + Fsywsuac.exe (ConfuserEx) |\n| 11 | PureLog Stealer runs in managed heap | Credentials, wallets, screenshots exfiltrated |",
+        "style": "warning"
+      },
+      "name": "text - Attack Chain"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "timeframe_param",
+            "version": "KqlParameterItem/1.0",
+            "name": "timeframe",
+            "type": 4,
+            "value": {
+              "durationMs": 5184000000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                },
+                {
+                  "durationMs": 5184000000
+                }
+              ],
+              "allowCustom": true
+            },
+            "timeContext": {
+              "durationMs": 5184000000
+            },
+            "timeContextFromParameter": "timeframe"
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters - timeframe"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 1 - File Hash IoC Match (ZIP, EXE, DLL, Renamed Python)\n// MITRE: T1204.002 - User Execution: Malicious File\nlet malicious_hashes = dynamic([\n    \"35efc4b75a1d70c38513b4dfe549da417aaa476bf7e9ebd00265aaa8c7295870\",  // ZIP lure (SHA256)\n    \"1539dab6099d860add8330bf2a008a4b6dc05c71f7b4439aebf431e034e5b6ff\",  // Notice of Alleged Violation.exe / ADNotificationManager.exe (SHA256)\n    \"ac591adea9a2305f9be6ae430996afd9b7432116f381b638014a0886a99c6287\",  // urlmon.dll shellcode loader (SHA256)\n    \"f4532fc1e5d53a732fcc883f7125ceb06b985048\"                             // svchost.exe (renamed python.exe) (SHA1)\n]);\nDeviceFileEvents\n| where Timestamp {timeframe}\n| where SHA256 in (malicious_hashes) or SHA1 in (malicious_hashes)\n| project-reorder Timestamp, DeviceName, FileName, FolderPath, SHA256, SHA1, InitiatingProcessCommandLine, InitiatingProcessAccountName\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 1 - File Hash IoC Match (ZIP, EXE, DLL, Renamed Python)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Hash IoC Hunt"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 2 - Network IoC Match (C2 Domains and IPs)\n// MITRE: T1071.001 - Application Layer Protocol: Web Protocols\n// MITRE: T1102 - Web Service\nlet malicious_domains = dynamic([\n    \"quickdocshare.com\",\n    \"bestshoppingday.com\",\n    \"bestshopingday.com\",\n    \"bestsaleshoppingday.com\",\n    \"eideasrl.it\"\n]);\nlet malicious_ips = dynamic([\n    \"166.0.184.127\",\n    \"64.40.154.96\"\n]);\nlet malicious_subdomains = dynamic([\n    \"dq.bestshoppingday.com\",\n    \"logs.bestshopingday.com\",\n    \"mh.bestshopingday.com\",\n    \"logs.bestsaleshoppingday.com\"\n]);\nDeviceNetworkEvents\n| where Timestamp {timeframe}\n| where RemoteUrl has_any (malicious_domains)\n    or RemoteIP in (malicious_ips)\n    or RemoteUrl has_any (malicious_subdomains)\n| project-reorder Timestamp, DeviceName, InitiatingProcessFileName, InitiatingProcessCommandLine, RemoteIP, RemoteUrl, RemotePort, ActionType\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 2 - Network IoC Match (C2 Domains and IPs)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Network IoC Hunt"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 3 - DNS IoC Match (C2 Infrastructure Domains)\n// MITRE: T1568 - Dynamic Resolution\n// MITRE: T1071.004 - Application Layer Protocol: DNS\nDeviceEvents\n| where Timestamp {timeframe}\n| where ActionType == \"DnsQueryResponse\"\n| extend DnsQuery = tostring(AdditionalFields.DnsQueryString)\n| where DnsQuery has \"quickdocshare.com\"\n    or DnsQuery has \"bestshoppingday.com\"\n    or DnsQuery has \"bestshopingday.com\"\n    or DnsQuery has \"bestsaleshoppingday.com\"\n    or DnsQuery has \"eideasrl.it\"\n| project-reorder Timestamp, DeviceName, DnsQuery, InitiatingProcessFileName, InitiatingProcessCommandLine, InitiatingProcessAccountName\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 3 - DNS IoC Match (C2 Infrastructure Domains)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - DNS IoC Hunt"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 4 - Copyright/IP Lure EXE Execution from Downloads\n// MITRE: T1566.002 - Phishing: Spearphishing Link\n// MITRE: T1204.002 - User Execution: Malicious File\n// Detects execution of EXE files from Downloads directory with copyright/IP-themed names\nDeviceProcessEvents\n| where Timestamp {timeframe}\n| where FolderPath has \"Downloads\"\n    and FileName endswith \".exe\"\n    and (\n        ProcessCommandLine has_any (\"Copyright\", \"Violation\", \"Intellectual\", \"Property\", \"Urheberrecht\", \"Versto\", \"Rechtsverletzung\", \"Notice\", \"Alleged\", \"Dokumentation\")\n        or FolderPath has_any (\"Copyright\", \"Violation\", \"Intellectual\", \"Property\", \"Notice\", \"Alleged\")\n    )\n| project-reorder Timestamp, DeviceName, AccountName, FileName, FolderPath, ProcessCommandLine, SHA256, InitiatingProcessFileName\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 4 - Copyright/IP Lure EXE Execution from Downloads",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 1 Lure Execution"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 5 - Suspicious curl Usage for Encrypted Payload + Key Retrieval\n// MITRE: T1105 - Ingress Tool Transfer\n// MITRE: T1071.001 - Application Layer Protocol: Web Protocols\nDeviceProcessEvents\n| where Timestamp {timeframe}\n| where FileName =~ \"curl.exe\"\n    and (\n        ProcessCommandLine has \"meow_meow\"\n        or (ProcessCommandLine has \"-A\" and ProcessCommandLine has \"-s\" and ProcessCommandLine has \"-k\" and ProcessCommandLine has \"-L\")\n        or (ProcessCommandLine has \"-s\" and ProcessCommandLine has \"-k\" and ProcessCommandLine has \"invoice.pdf\")\n        or (ProcessCommandLine has \"DQ\" and ProcessCommandLine has \"key\")\n    )\n| project-reorder Timestamp, DeviceName, InitiatingProcessAccountName, ProcessCommandLine, InitiatingProcessCommandLine, InitiatingProcessFileName, SHA256\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 5 - Suspicious curl Usage for Encrypted Payload + Key Retrieval",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 2 Curl Payload Download"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 6 - Renamed WinRAR (PNG Extension) Extracting Password-Protected Archives\n// MITRE: T1036.005 - Masquerading / T1140 - Deobfuscate Files\nDeviceProcessEvents\n| where Timestamp {timeframe}\n| where FileName endswith \".png\"\n    and (\n        (ProcessCommandLine has \" x \" and ProcessCommandLine has \"-p\")\n        or ProcessCommandLine has \"invoice.pdf\"\n        or (ProcessCommandLine has \"Users\" and ProcessCommandLine has \"Public\")\n    )\n| project-reorder Timestamp, DeviceName, InitiatingProcessAccountName, FileName, FolderPath, ProcessCommandLine, SHA256, InitiatingProcessCommandLine\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 6 - Renamed WinRAR (PNG Extension) Extracting Password-Protected Archives",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 3 Renamed WinRAR"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 7 - Renamed Python.exe (svchost.exe) Running PDF Loader from Public Path\n// MITRE: T1036.003 - Masquerading: Rename System Utilities\n// MITRE: T1059.006 - Command and Scripting Interpreter: Python\n// Detects svchost.exe executing from non-standard paths (not System32/SysWOW64)\nDeviceProcessEvents\n| where Timestamp {timeframe}\n| where FileName =~ \"svchost.exe\"\n    and not (FolderPath startswith \"C:\\\\Windows\\\\System32\" or FolderPath startswith \"C:\\\\Windows\\\\SysWOW64\")\n| where ProcessCommandLine has_any (\"instructions.pdf\", \".pdf\", \"-c\", \"exec(\", \"base64\")\n    or FolderPath has \"Public\"\n| project-reorder Timestamp, DeviceName, AccountName, FileName, FolderPath, ProcessCommandLine, SHA256, InitiatingProcessFileName\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 7 - Renamed Python.exe (svchost.exe) Running PDF Loader from Public Path",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 4 Renamed Python Masquerade"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 8 - Registry Run Key Persistence (SystemSettings Autorun Masquerade)\n// MITRE: T1547.001 - Boot or Logon Autostart Execution: Registry Run Keys\nDeviceRegistryEvents\n| where Timestamp {timeframe}\n| where RegistryKey has \"\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\"\n    and (\n        RegistryValueName =~ \"SystemSettings\"\n        or RegistryValueData has \"Public\\\\Windows\\\\\"\n        or RegistryValueData has \"instructions.pdf\"\n        or RegistryValueData has \"svchost.exe\"\n    )\n    and not (RegistryValueData startswith \"C:\\\\Windows\\\\\")\n| project-reorder Timestamp, DeviceName, InitiatingProcessAccountName, RegistryKey, RegistryValueName, RegistryValueData, InitiatingProcessFileName, InitiatingProcessCommandLine\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 8 - Registry Run Key Persistence (SystemSettings Autorun Masquerade)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 5 Registry Persistence"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 9 - Silent AV Enumeration via PowerShell WMI SecurityCenter2\n// MITRE: T1518.001 - Security Software Discovery\n// MITRE: T1059.001 - Command and Scripting Interpreter: PowerShell\nDeviceProcessEvents\n| where Timestamp {timeframe}\n| where FileName =~ \"powershell.exe\"\n    and ProcessCommandLine has \"SecurityCenter2\"\n    and ProcessCommandLine has \"AntivirusProduct\"\n    and (\n        ProcessCommandLine has \"-NoProfile\"\n        or ProcessCommandLine has \"-WindowStyle Hidden\"\n        or ProcessCommandLine has \"Get-WmiObject\"\n    )\n| project-reorder Timestamp, DeviceName, InitiatingProcessAccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessCommandLine, InitiatingProcessFolderPath\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 9 - Silent AV Enumeration via PowerShell WMI SecurityCenter2",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 6 AV Enumeration"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 10 - AMSI Bypass / Impairment from Non-Standard Process Paths\n// MITRE: T1562.001 - Impair Defenses: Disable or Modify Tools\n// Detects AMSI-related events from non-standard script hosts or from Public paths\nDeviceEvents\n| where Timestamp {timeframe}\n| where ActionType in (\"AmsiScriptDetection\", \"AntivirusDetection\", \"AntivirusScanCompleted\")\n    and (\n        InitiatingProcessFolderPath has \"Public\"\n        or InitiatingProcessFileName =~ \"svchost.exe\"\n        or InitiatingProcessCommandLine has \"instructions.pdf\"\n    )\n| project-reorder Timestamp, DeviceName, ActionType, InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessCommandLine, AdditionalFields\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 10 - AMSI Bypass / Impairment from Non-Standard Process Paths",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 7 AMSI Bypass"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 11 - Python Runtime Files Dropped in Fake Windows Directory (C:\\Users\\Public\\Windows)\n// MITRE: T1564.001 - Hide Artifacts: Hidden Files and Directories\n// MITRE: T1059.006 - Command and Scripting Interpreter: Python\n// Detects Python runtime files extracted into a fake Windows system directory\nlet python_artifacts = dynamic([\n    \"python314.dll\", \"_ctypes.pyd\", \"libffi-8.dll\", \"_hashlib.pyd\",\n    \"libcrypto-3.dll\", \"_socket.pyd\", \"_ssl.pyd\", \"libssl-3.dll\",\n    \"_bz2.pyd\", \"_lzma.pyd\", \"_zstd.pyd\", \"svchost.exe\", \"instructions.pdf\"\n]);\nDeviceFileEvents\n| where Timestamp {timeframe}\n| where FolderPath startswith \"C:\\\\Users\\\\Public\\\\Windows\"\n    and (\n        FileName in~ (python_artifacts)\n        or FileName endswith \".pyd\"\n        or FileName endswith \".dll\"\n    )\n| project-reorder Timestamp, DeviceName, ActionType, FileName, FolderPath, SHA256, InitiatingProcessFileName, InitiatingProcessCommandLine\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 11 - Python Runtime Files Dropped in Fake Windows Directory (C:\\Users\\Public\\Windows)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 8 Python Files Public Path"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 12 - Chrome Launched with Sandbox-Disabled Flags by Suspicious Parent (Browser Credential Harvesting)\n// MITRE: T1185 - Browser Session Hijacking\n// MITRE: T1555.003 - Credentials from Password Stores: Credentials from Web Browsers\nDeviceProcessEvents\n| where Timestamp {timeframe}\n| where FileName =~ \"chrome.exe\"\n    and ProcessCommandLine has \"--no-sandbox\"\n    and ProcessCommandLine has \"--user-data-dir\"\n    and ProcessCommandLine has \"Temp\"\n    and ProcessCommandLine has \"--extension-process\"\n    and not (InitiatingProcessFileName in~ (\"chrome.exe\", \"explorer.exe\", \"cmd.exe\", \"powershell.exe\"))\n| project-reorder Timestamp, DeviceName, InitiatingProcessAccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessCommandLine\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 12 - Chrome Launched with Sandbox-Disabled Flags by Suspicious Parent (Browser Credential Harvesting)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 9 Chrome Credential Harvest"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 13 - Full Kill Chain Correlation (Lure -> Download -> Masquerade -> AV Enum)\n// MITRE: Full Kill Chain Correlation\nlet lure_exec = DeviceProcessEvents\n| where Timestamp {timeframe}\n| where FolderPath has \"Downloads\"\n    and FileName endswith \".exe\"\n    and (\n        ProcessCommandLine has \"Copyright\"\n        or ProcessCommandLine has \"Violation\"\n        or ProcessCommandLine has \"Intellectual\"\n        or ProcessCommandLine has \"Notice\"\n        or ProcessCommandLine has \"Alleged\"\n        or FolderPath has \"Copyright\"\n        or FolderPath has \"Violation\"\n        or FolderPath has \"Notice\"\n        or FolderPath has \"Alleged\"\n    )\n| project DeviceName, lure_time = Timestamp;\nlet curl_download = DeviceProcessEvents\n| where Timestamp {timeframe}\n| where FileName =~ \"curl.exe\"\n    and (\n        ProcessCommandLine has \"meow_meow\"\n        or ProcessCommandLine has \"invoice.pdf\"\n        or ProcessCommandLine has \"/DQ\"\n    )\n| project DeviceName, curl_time = Timestamp;\nlet svchost_masq = DeviceProcessEvents\n| where Timestamp {timeframe}\n| where FileName =~ \"svchost.exe\"\n    and not (FolderPath startswith \"C:\\\\Windows\")\n| project DeviceName, svchost_time = Timestamp;\nlet av_enum = DeviceProcessEvents\n| where Timestamp {timeframe}\n| where FileName =~ \"powershell.exe\"\n    and ProcessCommandLine has \"SecurityCenter2\"\n    and ProcessCommandLine has \"AntivirusProduct\"\n| project DeviceName, avenum_time = Timestamp;\nlure_exec\n| join kind=inner curl_download on DeviceName\n| join kind=inner svchost_masq on DeviceName\n| join kind=inner av_enum on DeviceName\n| where curl_time between (lure_time .. (lure_time + 30m))\n    and svchost_time between (lure_time .. (lure_time + 60m))\n    and avenum_time between (lure_time .. (lure_time + 90m))\n| project DeviceName, lure_time, curl_time, svchost_time, avenum_time\n| sort by lure_time desc",
+        "size": 0,
+        "title": "Hunt 13 - Full Kill Chain Correlation (Lure -> Download -> Masquerade -> AV Enum)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 10 Kill Chain Correlation"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 14 - CacheVersion=1337 Registry Marker (PureLog C2 Exfil Success Indicator)\n// MITRE: T1112 - Modify Registry\nDeviceRegistryEvents\n| where Timestamp {timeframe}\n| where RegistryKey has \"AppModel\\\\StateRepository\"\n    and RegistryValueName =~ \"CacheVersion\"\n    and RegistryValueData =~ \"1337\"\n| project-reorder Timestamp, DeviceName, InitiatingProcessAccountName, RegistryKey, RegistryValueName, RegistryValueData, InitiatingProcessFileName, InitiatingProcessCommandLine\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 14 - CacheVersion=1337 Registry Marker (PureLog C2 Exfil Success Indicator)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 11 Registry CacheVersion Marker"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Hunt 15 - HTTPS C2 Exfiltration from Renamed Python Loader (Public Path svchost.exe)\n// MITRE: T1041 - Exfiltration Over C2 Channel\n// MITRE: T1567 - Exfiltration Over Web Service\n// Detects outbound HTTPS connections from the renamed python loader for data exfiltration\nDeviceNetworkEvents\n| where Timestamp {timeframe}\n| where InitiatingProcessFileName =~ \"svchost.exe\"\n    and InitiatingProcessFolderPath has \"Public\"\n    and RemotePort == 443\n    and ActionType == \"ConnectionSuccess\"\n| project-reorder Timestamp, DeviceName, InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessCommandLine, RemoteIP, RemoteUrl, RemotePort\n| sort by Timestamp desc",
+        "size": 0,
+        "title": "Hunt 15 - HTTPS C2 Exfiltration from Renamed Python Loader (Public Path svchost.exe)",
+        "timeContextFromParameter": "timeframe",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "query - Behavioral Hunt 12 C2 Exfil"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\n## Section 3: MITRE ATT&CK Technique Coverage\n\n| Tactic | Technique ID | Technique Name | Hunt Query Coverage |\n|--------|-------------|----------------|---------------------|\n| Initial Access | T1566.002 | Phishing: Spearphishing Link | Hunt 1 (Behavioral) |\n| Initial Access | T1566 | Phishing (Malvertising via Google Ads) | Hunt 2 (Behavioral) |\n| Execution | T1204.002 | User Execution: Malicious File | Hunt 1 (IoC + Behavioral) |\n| Execution | T1059.001 | PowerShell | Hunt 6 (Behavioral) |\n| Execution | T1059.006 | Python | Hunt 4, 8 (Behavioral) |\n| Persistence | T1547.001 | Registry Run Keys / Startup Folder | Hunt 5 (Behavioral) |\n| Defense Evasion | T1036.003 | Masquerading: Rename System Utilities | Hunt 4 (Behavioral) |\n| Defense Evasion | T1036.005 | Masquerading: Match Legitimate Name | Hunt 3 (Behavioral) |\n| Defense Evasion | T1140 | Deobfuscate/Decode Files or Information | Hunt 3 (Behavioral) |\n| Defense Evasion | T1562.001 | Impair Defenses: Disable or Modify Tools (AMSI) | Hunt 7 (Behavioral) |\n| Defense Evasion | T1564.001 | Hide Artifacts: Hidden Files and Directories | Hunt 8 (Behavioral) |\n| Defense Evasion | T1027 | Obfuscated Files or Information (ConfuserEx, Base64, XOR) | Hunt 10 (Correlation) |\n| Defense Evasion | T1620 | Reflective Code Loading (.NET Assembly.Load) | Hunt 4, 12 (Behavioral) |\n| Discovery | T1518.001 | Security Software Discovery | Hunt 6 (Behavioral) |\n| Discovery | T1082 | System Information Discovery (Machine Fingerprint) | Hunt 6, 10 (Behavioral) |\n| Collection | T1113 | Screen Capture | Hunt 9, 12 (Behavioral) |\n| Command and Control | T1071.001 | Application Layer Protocol: Web Protocols | Hunt 2 (IoC), Hunt 12 |\n| Command and Control | T1105 | Ingress Tool Transfer | Hunt 2 (Behavioral) |\n| Command and Control | T1568 | Dynamic Resolution | Hunt 3 (IoC) |\n| Exfiltration | T1041 | Exfiltration Over C2 Channel | Hunt 12 (Behavioral) |\n| Credential Access | T1555.003 | Credentials from Web Browsers | Hunt 9 (Behavioral) |",
+        "style": "info"
+      },
+      "name": "text - MITRE ATT&CK Mapping"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\n## Section 4: Investigation Playbook\n### Step-by-Step Response Workflow\n\n**Step 1 - Triage Initial Alert**\n- Run IoC hunts (Hunts 1-3) to confirm presence of known-bad hashes, domains, or IPs\n- Note the DeviceName and AccountName for scoping\n- Check if DeviceName belongs to a targeted sector (Healthcare, Government, Hospitality, Education)\n\n**Step 2 - Confirm Infection Chain**\n- Run Behavioral Hunt 10 (Kill Chain Correlation) on the suspect device\n- Verify presence of C:\\\\Users\\\\Public\\\\Windows\\\\ directory with Python DLL artifacts (Hunt 8)\n- Check for svchost.exe in non-standard path (Hunt 4)\n\n**Step 3 - Establish Persistence Footprint**\n- Run Hunt 5 to check for SystemSettings registry autorun key\n- Check HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run for suspicious entries\n- Run Hunt 11 to check for CacheVersion=1337 marker (confirms successful C2 exfil already occurred)\n\n**Step 4 - Assess Defense Evasion**\n- Run Hunt 7 to confirm AMSI bypass activity\n- Check if curl.exe was called with meow_meow user-agent (Hunt 2 Behavioral)\n- Review any .png files that spawned extraction processes (Hunt 3)\n\n**Step 5 - Scope C2 Communications**\n- Run Hunt 12 to identify all outbound connections from the loader process\n- Cross-reference IPs against known PureLog C2 (166.0.184.127, 64.40.154.96)\n- Check for DNS queries to bestshopingday.com and quickdocshare.com (Hunt 3 IoC)\n\n**Step 6 - Assess Data Exposure**\n- Run Hunt 9 to identify Chrome browser sessions spawned by the loader\n- Assume credentials, cookies, browser extensions, and screenshots are compromised\n- Assume cryptocurrency wallet data may be at risk\n- Notify affected user and initiate credential reset for all browser-stored passwords\n\n**Step 7 - Containment**\n- Isolate the affected device immediately\n- Block all IoC domains and IPs at proxy/firewall\n- Remove SystemSettings registry autorun key\n- Delete C:\\\\Users\\\\Public\\\\Windows\\\\ directory and all contents\n\n**Step 8 - Recovery**\n- Re-image or deep clean the affected endpoint\n- Force MFA challenge on all accounts accessible from the affected device\n- Review email gateway for copyright-themed phishing messages delivered to the organization\n- Check for Google Ads referral traffic to quickdocshare.com or eideasrl.it in proxy logs",
+        "style": "warning"
+      },
+      "name": "text - Investigation Playbook"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\n## Section 5: Full IoC Reference\n\n### File Hashes\n| File | Hash Type | Hash Value |\n|------|-----------|------------|\n| Notice_ViolationIP_Rights.zip (lure archive) | SHA256 | 35efc4b75a1d70c38513b4dfe549da417aaa476bf7e9ebd00265aaa8c7295870 |\n| Notice of Alleged Violation.exe / ADNotificationManager.exe | SHA256 | 1539dab6099d860add8330bf2a008a4b6dc05c71f7b4439aebf431e034e5b6ff |\n| urlmon.dll (shellcode loader) | SHA256 | ac591adea9a2305f9be6ae430996afd9b7432116f381b638014a0886a99c6287 |\n| svchost.exe (renamed python.exe) | SHA1 | f4532fc1e5d53a732fcc883f7125ceb06b985048 |\n\n### Domains\n| Domain | Role |\n|--------|------|\n| quickdocshare.com | Encrypted payload hosting + decryption key endpoint |\n| dq.bestshoppingday.com | C2 redirect / alias |\n| logs.bestshopingday.com | PureLog Stealer C2 (strongly associated) |\n| mh.bestshopingday.com | C2 infrastructure |\n| logs.bestsaleshoppingday.com | C2 infrastructure |\n| cdn.eideasrl.it | Lure ZIP hosting |\n\n### IP Addresses\n| IP Address | Provider | Role |\n|------------|----------|------|\n| 166.0.184.127 | Unknown | PureLog Stealer primary C2 server |\n| 64.40.154.96 | Tier.Net Technologies LLC | Secondary C2 / staging |\n| 172.64.80.1 | Cloudflare | CDN (likely proxying C2 traffic) |\n\n### File Paths and Names\n| Path / Filename | Notes |\n|----------------|-------|\n| C:\\\\Users\\\\Public\\\\Windows\\\\ | Staging directory mimicking legitimate Windows path |\n| C:\\\\Users\\\\Public\\\\Windows\\\\svchost.exe | Renamed python.exe loader |\n| C:\\\\Users\\\\Public\\\\Windows\\\\instructions.pdf | Obfuscated Python loader script |\n| .\\\\invoice.pdf | Encrypted payload archive (temporary) |\n| .\\\\document.pdf | Decoy PDF |\n| FILE_2025*_*.png | Renamed WinRAR executable |\n| Dgrfauysx.exe | First in-memory .NET loader (ConfuserEx obfuscated) |\n| Fsywsuac.exe | Second in-memory .NET loader (redundancy mechanism) |\n\n### Registry Keys\n| Key Path | Value Name | Value Data | Purpose |\n|----------|-----------|------------|---------|\n| HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run | SystemSettings | [path to svchost.exe] | Persistence autorun |\n| HKCU\\\\...\\\\AppModel\\\\StateRepository | CacheVersion | 1337 | Anti-duplicate C2 exfil flag |",
+        "style": "info"
+      },
+      "name": "text - Full IoC Reference"
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/110e6d46-13e5-4f38-81d7-d6a79a512ae9/resourcegroups/rg-soc-environment/providers/microsoft.operationalinsights/workspaces/ws-security-main"
+  ],
+  "fromTemplateId": "sentinel-UserWorkbook",
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
